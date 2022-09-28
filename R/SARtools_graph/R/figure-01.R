@@ -2,6 +2,7 @@
 library(tidyverse)
 # Load custom function read_SARtools_into_tibble
 source("SARtools_graph/R/common.R")
+source("SARtools_graph/R/figure-01_colors.R")
 
 # Configuration
 # Save dir path into variable
@@ -44,6 +45,8 @@ figure <- data %>%
   mutate(
     Frequency = ifelse(Up_or_down_regulated == "Up", Frequency, -Frequency)
   ) %>%
+  # Filtering [S] function out
+  filter(Lvl_2_letter != "[S]") %>%
   ggplot(aes(x = Lvl_2_letter, y = Frequency)) +
   geom_bar(aes(fill = COG_Category_lvl_2_2, color = COG_Category_lvl_2_2),
            stat = "identity", position = "identity"
@@ -53,6 +56,8 @@ figure <- data %>%
   geom_hline(yintercept = 0) +
   geom_text(aes(y = Frequency, label = abs(Frequency))) +
   scale_y_continuous(labels = abs) +
+  scale_fill_manual(values  = levels_colors) +
+  scale_color_manual(values  = levels_colors) +
   xlab("Category level 2") +
   theme(
     legend.position = "bottom",

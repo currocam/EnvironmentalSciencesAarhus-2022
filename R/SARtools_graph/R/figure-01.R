@@ -32,7 +32,14 @@ data <- paste0(dirpath, txt_files) %>%
   purrr::map_dfr(
     .id = "file",
     read_SARtools_into_tibble)
-  
+
+# Check before plot
+if(length(levels_colors) != length(levels(data$Lvl_2_letter))){
+  stop(
+    "There are a number of different levels and colors. Consider adding ",
+    "or removing colors or coloring automatically by removing calls to the ",
+    "scale_color_manual function.")   
+}
 # Plotting figures
 ## Save ggplot into figure variable
 figure <- data %>%

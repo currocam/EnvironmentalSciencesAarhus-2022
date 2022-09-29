@@ -29,9 +29,21 @@ data <- paste0(dirpath, txt_files) %>%
     txt_files %>%
       stringr::str_sub(1, 2)
     ) %>%
-  purrr::map_dfr(
+  purrr::map_df(
     .id = "file",
     read_SARtools_into_tibble)
+
+# Arrange factors
+levels(data$Up_or_down_regulated) <- c("Up", "Down") # Show first up, then Down
+data$COG_Category_lvl_1 <- fct_infreq(data$COG_Category_lvl_1) #Show most frequent first
+data$COG_Category_lvl_2_2 <- fct_reorder(
+  fct_infreq(data$COG_Category_lvl_2_2), # Show most frequent first
+  as.numeric(data$COG_Category_lvl_1) # taking in account category level 1
+)
+data$Lvl_2_letter <- fct_reorder( # Again the same
+  fct_infreq(data$Lvl_2_letter), as.numeric(data$COG_Category_lvl_1)
+)
+
 
 # Check before plot
 if(length(levels_colors) != length(levels(data$Lvl_2_letter))){

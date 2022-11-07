@@ -1,0 +1,386 @@
+---
+title: "OTU Analysis"
+format: html
+editor: visual
+---
+
+## OTU Analysis
+
+This interactive notebook is made with Quarto. Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+# Preparing the enviroment
+
+## Checking for missing dependencies
+
+```{r}
+#|label: dependencies
+#|message: false
+#|warning: false
+#|echo: false
+
+if (!require("BiocManager")){install.packages("BiocManager")}
+if (!require("phyloseq")){BiocManager::install("phyloseq")}
+if (!require("tidyverse")){install.packages("tidyverse")}
+if (!require("devtools")){install.packages("devtools")}
+if (!require("rwantshue")){devtools::install_github("rwantshue")}
+if (!require("pairwiseAdonis")){devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")}
+library(tidyverse)
+```
+
+## Some formatting issues
+
+Please skip this bit if you want to use the default values. These are Nature's guidelines for generating figures and they look very nice for printing (credits to Palle Villesen).
+
+```{r}
+library(cowplot)
+
+options(digits = 3)        # number of digits printed by R default (vectors, data.frames, lists)
+options(pillar.sigfig = 3) # number of digits printed by tibbles default.
+
+text_base_size   <- 16   # in pt
+fig.witdh        <- 180  # in mm
+fig.height       <- 125  # in mm
+
+# Set all text in plots to same size
+theme_set(theme_cowplot(font_size = text_base_size, rel_small = 1, rel_tiny = 1, rel_large = 1))
+
+# Setting output sizes for plots in knitted html
+knitr::opts_chunk$set(fig.width = fig.witdh/25.4)
+knitr::opts_chunk$set(fig.height = fig.height/25.4)
+knitr::opts_chunk$set(dpi = 108) # You need to find your minotors dpi yourself.
+
+# Setting text size inside plots (geom_text, geom_label etc.)
+ggplot_text_size <- text_base_size / ggplot2::.pt
+# Now use: geom_text(..., size = ggplot_text_size)
+
+# For saving plots!
+# Use: ggsave(plot1, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+# Use: ggsave(plot1, filename="myplot.pdf", width = fig.witdh, height=fig.height, units = "mm")
+
+# Set locale if you want danish month names etc.
+#Sys.setlocale(locale = "Danish_Denmark")  # For danish axes on plot
+Sys.setlocale(locale = "English_Denmark") # For english axes on plot
+```
+
+### Preparing I Want Hue colors palette
+
+We are going to use I want Hue to make the different palettes. Notice that you should change the seed and palette in order to get different colors (see @fig-palette).
+
+```{r}
+#|label: iwanthue
+#|message: false
+#|warning: false
+scheme <- iwanthue(seed = 10, force_init = TRUE)
+get_wants_hue <- function(n, palette = "colorblind_friendly"){
+ scheme$hex(n,color_space = hcl_presets[[palette]])
+}
+
+# Changing default ggplot colours
+# see ?scale_fill_continuous
+# https://ggplot2.tidyverse.org/reference/scale_colour_continuous.html
+# https://ggplot2.tidyverse.org/reference/scale_colour_discrete.html 
+#
+options(ggplot2.continuous.colour = scale_colour_viridis_c)
+options(ggplot2.discrete.fill     = list(get_wants_hue(7)))
+options(ggplot2.discrete.colour   = list(get_wants_hue(7)))
+```
+
+```{r}
+#| label: fig-palette
+#| fig-cap: Colour palettes from I want Hue
+#| fig-subcap: 
+#|   - "Colorblind friendly"
+#|   - "Default"
+#| layout-ncol: 2
+get_wants_hue(16) %>%
+  scales::show_col()
+
+get_wants_hue(16, "default") %>%
+  scales::show_col()
+```
+
+# Preparing data
+
+## Reading OTU table and taxonomic csv
+
+```{r}
+#|label: read-files
+OTU_CSV <- "data/02OTU.csv"
+TAXA_CSV <- "data/02TAX.csv"
+otu <- readr::read_csv(OTU_CSV) %>%
+  phyloseq::otu_table(taxa_are_rows = TRUE)
+taxa <- readr::read_csv(TAXA_CSV)%>%
+  as.matrix() %>%
+  phyloseq::tax_table()
+```
+
+## Creating Metadata table
+
+```{r}
+#|label: metadata
+n_samples <- 6
+
+meta <- tibble(
+  rowname = colnames(otu),
+  sample = rep(1:n_samples, ncol(otu)/n_samples),
+  timepoint = c(rep("T0", n_samples), rep("T1", n_samples), rep("T2", n_samples), rep("T4", n_samples)),
+  treatment = rep(c(rep("Control", 3), rep("Alfalfa", 3)), 4)
+) %>%
+  tidyr::unite("sample_time", c("timepoint", "sample"), remove = FALSE) %>%
+  tidyr::unite("sample_type", c("sample", "treatment"), remove = FALSE) %>%
+  tidyr::unite("treatment_timepoint", c("treatment", "timepoint"), remove = FALSE) %>%
+  tidyr::unite("treatment_timepoint", c("treatment", "timepoint"), remove = FALSE) %>%
+  tidyr::unite("sample_treatment_timepoint", c("sample", "treatment", "timepoint"), remove = FALSE) %>%
+  tibble::column_to_rownames() %>%
+  phyloseq::sample_data()
+```
+
+## Creating `phyloseq` object
+
+Now, we combine OTU table, taxonomy table and metadata into a `phyloseq` object.
+
+```{r}
+#|label: phyloseq
+(physeq <- phyloseq(otu, taxa, meta))
+```
+
+## Dealing with taxonomic categories
+
+We will remove the SILVA prefix, anything labelled "unknown" (this will not affect abundances) and replace spaces with underscores.
+
+```{r}
+#|label: prepro-taxa
+# Remove prefix
+silva_prefix <- c(
+  "k_", "p_", "c_", "o_", "f_", "g_", "s_"
+)
+tax_table(physeq) <- silva_prefix %>%
+  paste(collapse = "|") %>%
+  gsub("", tax_table(physeq))
+
+tax_table(physeq) <- gsub("Unknown.*", "", tax_table(physeq))
+
+tax_table(physeq) <- gsub(" ", "_", tax_table(physeq))
+
+head(tax_table(physeq), 2)
+```
+
+## Making unique OTU labels
+
+First, we define the following function in order to create the new unique labels:
+
+```{r}
+#|label: makeTaxLabel
+makeTaxLabel <- function(physeq){
+  tax_table(physeq) %>%
+  as.data.frame() %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::everything(),~ na_if(.,""))) %>%
+  purrr::transpose() %>%
+  purrr::map_chr(~as.character(.x) %>% na.omit() %>% tail(1)) %>%
+  make.unique()
+}
+```
+
+Now, we assign these new labels:
+
+```{r}
+#|label: asisgn_new_labels
+taxa_names(physeq) <- makeTaxLabel(physeq)
+```
+
+# Inspecting data
+
+Now, we can inspect the resulting tables (see @tbl-otu and @tbl-taxa).
+
+```{r}
+#| label: tbl-otu
+#| tbl-cap: "OTU table"
+#| tbl-subcap: 
+#|   - "Head of the table"
+#|   - "Tail of the table"
+#| layout-nrow: 2
+#| echo: fenced
+
+library(knitr)
+kable(head(otu_table(physeq)))
+kable(tail(otu_table(physeq)))
+
+```
+
+```{r}
+#| label: tbl-taxa
+#| tbl-cap: "Taxonomic table"
+#| tbl-subcap: 
+#|   - "Head of the table"
+#|   - "Tail of the table"
+#| layout-nrow: 2
+#| echo: fenced
+
+library(knitr)
+kable(head(otu_table(tax_table)))
+kable(tail(otu_table(tax_table)))
+```
+
+# Data analysis
+
+## Perform an ordination using Nonmetric Multidimensional Scaling
+
+Now, we ordinate using the NMDS method and bray distance. NMDS performs a Non-metric MultiDimenstional Scaling of a sample-wise ecological distance matrix onto a user-specified number of axes, k (in this case 2).
+
+```{r}
+#| label: ordination 
+(physeq_nmds <- ordinate(physeq, method = "NMDS", distance = "bray"))
+
+```
+
+## Goodness of Fit and Shepard Plot for Nonmetric Multidimensional Scaling
+
+Now, we find the goodness of fit measure for the points in the previous nonmetric multidimensional scaling. The Shepard diagram is shown in @fig-stressplot .
+
+```{r}
+#| label: fig-stressplot 
+#| fig-cap: A plot of ordination distances and monotone or linear fit line against original dissimilarities.
+vegan::stressplot(physeq_nmds)
+
+```
+
+```{r}
+#| label: fig-NMDS-plot-all 
+#| fig-cap: A ordination plot showing metadata information.
+(NMDS.plot.all <- physeq %>%
+  plot_ordination(
+    physeq_nmds,
+    type ="samples",
+    color = "timepoint",
+    shape = "treatment",
+    title = "NMDS, bray-curtis dissimilarity"
+    )+
+  geom_point(size=3)+
+  theme_bw()+
+  theme(
+    legend.title = element_blank(),
+    strip.background = element_rect(fill="white" ))
+)
+# ggsave(NMDS.plot.all, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+## Permutational Multivariate Analysis of Variance Using Distance Matrices (Adonis test)
+
+The `adonis()` function is soft deprecated and we should use `adonis2()` instead. First, we do a test with the formula distance \~ treatment.
+
+```{r}
+#| label: test-adonis-treatment
+metadata <- as(sample_data(physeq), "data.frame")
+(
+test.adonis.treatment <- vegan::adonis2(
+  distance(physeq, method="bray") ~ treatment, data = metadata
+  )
+)
+```
+
+Now, we use treament and timepoint.
+
+```{r}
+#| label: test-adonis-treatment-timepoint
+(
+test.adonis.treatment.timepoint <- vegan::adonis2(
+  distance(physeq, method="bray") ~ treatment_timepoint, data = metadata
+  )
+)
+```
+
+## Pairwise Adonis test
+
+```{r}
+#| label: pairwise-adonis
+permanova <- vegan::adonis2(
+  t(otu)~ treatment, data = metadata, permutations=999, method = "bray"
+  )
+library(pairwiseAdonis)
+
+post_hoc_permanova <- pairwiseAdonis::pairwise.adonis(
+  t(otu), metadata$treatment_timepoint,
+  sim.function = "vegdist",sim.method = "bray",
+  p.adjust.m = "fdr", reduce = NULL, perm = 999
+  )
+```
+
+```{r}
+#| label: tbl-post_hoc_permanova
+#| tbl-cap: "Results for multilevel pairwise comparison using Adonis Test"
+kable(post_hoc_permanova)
+```
+
+## Plot alpha diversity
+
+```{r}
+#| label: fig-richness-all 
+#| fig-cap: A diversity plot showing metadata information.
+(
+  richness.plot.all <- plot_richness(
+    physeq, x="treatment_timepoint", 
+    color = "sample", shape ="treatment",
+    measures=c("Shannon", "InvSimpson")
+    ) +
+  geom_boxplot(alpha = 0.1) +
+  theme_bw()+
+  theme(
+    legend.title = element_blank(),
+    legend.position = "none",
+    strip.background = element_rect(fill="white"),
+    axis.text.x = element_text(angle = 45, hjust = 1))
+)
+# write the calculations in a file
+write_tsv(richness.plot.all$data, 'richness_all_calc_data_wo_plant.tsv')
+# ggsave(richness.plot.all, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+## Plot stacked barplots
+
+For stacked barplots, we will work with means of replicates using the `merge_samples` function. The default of this function is `merge_samples(x, group, fun= mean)`.
+
+```{r}
+#|label: replicates_means
+number_of_replicates <- 3
+physeq_all_mean <- physeq %>%
+  merge_samples("treatment_timepoint") %>%
+  #After merging, we divide by the number of replicates
+  transform_sample_counts(function(x) x/ number_of_replicates)
+```
+
+Now, we are going to inspect how many taxonomic groups are for each level:
+
+```{r}
+#| label: tbl-categories
+#| tbl-cap: "Number of unique categories for each Taxonomic Level"
+tax_table(physeq_all_mean) %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(),names_to = "Tax.Level", values_to = "Tax") %>%
+  group_by(Tax.Level) %>%
+  summarise(n = length(unique(Tax))) %>%
+  kable()
+```
+
+Now, we agglomerate at different taxonomic levels:
+
+```{r}
+#|label: agglomerate 
+#agglomeration on the Phylum level
+(physeq_all_mean_phylum <- tax_glom(physeq_all_mean, taxrank = "Phylum"))
+
+#agglomeration on the Phylum level
+(physeq_all_mean_kingdom <- tax_glom(physeq_all_mean, taxrank = "Kingdom"))
+```
+
+```{r}
+#| label: tbl-sample_sums
+#| tbl-cap: "Sample sums"
+tibble(
+  samples = names(sample_sums(physeq_all_mean)),
+  all = sample_sums(physeq_all_mean),
+  phylum = sample_sums(physeq_all_mean_phylum),
+  kingdom = sample_sums(physeq_all_mean_kingdom)
+) %>% 
+  kable()
+```

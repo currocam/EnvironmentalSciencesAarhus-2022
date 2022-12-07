@@ -8,7 +8,7 @@ editor: visual
 
 This interactive notebook is made with Quarto. Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
 
-# Preparing the enviroment
+# Preparing the environment
 
 ## Checking for missing dependencies
 
@@ -22,9 +22,11 @@ if (!require("BiocManager")){install.packages("BiocManager")}
 if (!require("phyloseq")){BiocManager::install("phyloseq")}
 if (!require("tidyverse")){install.packages("tidyverse")}
 if (!require("devtools")){install.packages("devtools")}
-if (!require("rwantshue")){devtools::install_github("rwantshue")}
 if (!require("pairwiseAdonis")){devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")}
+if(!require("microbiome")){BiocManager::install("microbiome")}
+
 library(tidyverse)
+library(phyloseq)
 ```
 
 ## Some formatting issues
@@ -32,58 +34,13 @@ library(tidyverse)
 Please skip this bit if you want to use the default values. These are Nature's guidelines for generating figures and they look very nice for printing (credits to Palle Villesen).
 
 ```{r}
-library(cowplot)
+source("scripts/configuration_format.R")
 
-options(digits = 3)        # number of digits printed by R default (vectors, data.frames, lists)
-options(pillar.sigfig = 3) # number of digits printed by tibbles default.
-
-text_base_size   <- 16   # in pt
-fig.witdh        <- 180  # in mm
-fig.height       <- 125  # in mm
-
-# Set all text in plots to same size
-theme_set(theme_cowplot(font_size = text_base_size, rel_small = 1, rel_tiny = 1, rel_large = 1))
-
-# Setting output sizes for plots in knitted html
-knitr::opts_chunk$set(fig.width = fig.witdh/25.4)
-knitr::opts_chunk$set(fig.height = fig.height/25.4)
-knitr::opts_chunk$set(dpi = 108) # You need to find your minotors dpi yourself.
-
-# Setting text size inside plots (geom_text, geom_label etc.)
-ggplot_text_size <- text_base_size / ggplot2::.pt
-# Now use: geom_text(..., size = ggplot_text_size)
-
-# For saving plots!
-# Use: ggsave(plot1, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
-# Use: ggsave(plot1, filename="myplot.pdf", width = fig.witdh, height=fig.height, units = "mm")
-
-# Set locale if you want danish month names etc.
-#Sys.setlocale(locale = "Danish_Denmark")  # For danish axes on plot
-Sys.setlocale(locale = "English_Denmark") # For english axes on plot
 ```
 
 ### Preparing I Want Hue colors palette
 
 We are going to use I want Hue to make the different palettes. Notice that you should change the seed and palette in order to get different colors (see @fig-palette).
-
-```{r}
-#|label: iwanthue
-#|message: false
-#|warning: false
-scheme <- iwanthue(seed = 10, force_init = TRUE)
-get_wants_hue <- function(n, palette = "colorblind_friendly"){
- scheme$hex(n,color_space = hcl_presets[[palette]])
-}
-
-# Changing default ggplot colours
-# see ?scale_fill_continuous
-# https://ggplot2.tidyverse.org/reference/scale_colour_continuous.html
-# https://ggplot2.tidyverse.org/reference/scale_colour_discrete.html 
-#
-options(ggplot2.continuous.colour = scale_colour_viridis_c)
-options(ggplot2.discrete.fill     = list(get_wants_hue(7)))
-options(ggplot2.discrete.colour   = list(get_wants_hue(7)))
-```
 
 ```{r}
 #| label: fig-palette
@@ -92,7 +49,7 @@ options(ggplot2.discrete.colour   = list(get_wants_hue(7)))
 #|   - "Colorblind friendly"
 #|   - "Default"
 #| layout-ncol: 2
-get_wants_hue(16) %>%
+get_wants_hue(n = 4,seed = 5) %>%
   scales::show_col()
 
 get_wants_hue(16, "default") %>%
@@ -218,8 +175,8 @@ kable(tail(otu_table(physeq)))
 #| echo: fenced
 
 library(knitr)
-kable(head(otu_table(tax_table)))
-kable(tail(otu_table(tax_table)))
+kable(head(tax_table(physeq)))
+kable(tail(tax_table(physeq)))
 ```
 
 # Data analysis
@@ -317,12 +274,10 @@ kable(post_hoc_permanova)
 ```{r}
 #| label: fig-richness-all 
 #| fig-cap: A diversity plot showing metadata information.
-(
-  richness.plot.all <- plot_richness(
-    physeq, x="treatment_timepoint", 
-    color = "sample", shape ="treatment",
-    measures=c("Shannon", "InvSimpson")
-    ) +
+
+# Create custom function
+plot_richness_custom <- function(...){
+  plot_richness(...) +
   geom_boxplot(alpha = 0.1) +
   theme_bw()+
   theme(
@@ -330,6 +285,14 @@ kable(post_hoc_permanova)
     legend.position = "none",
     strip.background = element_rect(fill="white"),
     axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+(
+  richness.plot.all <- plot_richness_custom(
+    physeq, x="treatment_timepoint", 
+    color = "sample", shape ="treatment",
+    measures=c("Shannon", "InvSimpson")
+    )
 )
 # write the calculations in a file
 write_tsv(richness.plot.all$data, 'richness_all_calc_data_wo_plant.tsv')
@@ -373,6 +336,8 @@ Now, we agglomerate at different taxonomic levels:
 (physeq_all_mean_kingdom <- tax_glom(physeq_all_mean, taxrank = "Kingdom"))
 ```
 
+Check sample sums to make sure nothing was deleted due to NAs (should sum up to 1)
+
 ```{r}
 #| label: tbl-sample_sums
 #| tbl-cap: "Sample sums"
@@ -383,4 +348,250 @@ tibble(
   kingdom = sample_sums(physeq_all_mean_kingdom)
 ) %>% 
   kable()
+```
+
+Since we get too many phyla to plot in a stacked barplot, we will filter the low abundant ones and put them into one category. To do this, we will use the power of tidyverse again
+
+```{r}
+#| label: prepro-stacked
+physeq_all_mean_phylumDF<- psmelt(physeq_all_mean_phylum) %>%
+  mutate(
+    Phylum2 =  as.factor(Phylum) %>%
+      replace(Abundance < 1, "< 1%"),
+    
+  )
+physeq_all_mean_kingdomDF<- psmelt(physeq_all_mean_kingdom) %>%
+  mutate(
+    Kingdom2 =  as.factor(Kingdom) %>%
+      replace(Abundance < 0.5, "< 0.5%")
+  )
+
+```
+
+Reorder the phyla and kingdom so that they are stacked according to abundance
+
+```{r}
+#| label: prepro-reorder-stacked
+
+physeq_all_mean_phylumDF$Phylum2 <- reorder(
+  physeq_all_mean_phylumDF$Phylum2,
+  physeq_all_mean_phylumDF$Abundance
+  )
+
+physeq_all_mean_kingdomDF$Kingdom <- reorder(
+  physeq_all_mean_kingdomDF$Kingdom,
+  physeq_all_mean_kingdomDF$Abundance
+  )
+```
+
+```{r}
+#| label: fig-stacked-phylum
+#| fig-cap: Relative abundance per phylum.
+(
+stacked_phylum_plot <- physeq_all_mean_phylumDF %>%
+    ggplot(aes(Sample, Abundance, fill=Phylum2)) +
+    geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = get_wants_hue(length(
+      unique(physeq_all_mean_phylumDF$Phylum2)
+      ))
+    ) +
+  labs(y= "Relative abundance [%]",
+       fill= "Phlya") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+```
+
+```{r}
+#| label: fig-stacked-kingdom
+#| fig-cap: Relative abundance per phylum.
+(
+stacked_kingdom_plot <- physeq_all_mean_kingdomDF %>%
+    ggplot(aes(Sample, Abundance, fill=Kingdom2)) +
+    geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = get_wants_hue(length(
+      unique(physeq_all_mean_kingdomDF$Kingdom2)),seed =  2)
+    ) +
+  labs(y= "Relative abundance [%]",
+       fill= "Kingdom") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+```
+
+## Anova
+
+```{r}
+#| label: microbiome-anovatest
+library("microbiome")
+
+microbiome_otu <- microbiome::abundances(physeq)
+microbiome_meta <- microbiome::meta(physeq)
+
+
+microbiome_permanova <- vegan::adonis2(
+  t(microbiome_otu)~treatment_timepoint,
+  data = microbiome_meta,
+  permutations=999, method = "bray"
+  )
+
+```
+
+## Calculate beta dispersion (in this case - the dispersion between the kits)
+
+```{r}
+#|label: betadisper
+
+dist <- vegan::vegdist(t(microbiome_otu), method="bray")
+
+(mod <- vegan::betadisper(dist, microbiome_meta$treatment_timepoint, type="centroid"))
+
+
+mod$treatment_timepoint <- microbiome_meta$treatment_timepoint
+```
+
+Compute Tukey Honest Significant Differences
+
+```{r}
+#| label: fig-TukeyHSD-beta-dispersion
+#| layout-ncol: 2
+
+(beta_Tukey <- TukeyHSD(mod))
+
+plot(
+  mod,  hull=FALSE, ellipse=TRUE,
+  main = "PCoA", sub=NULL,
+  col= get_wants_hue(length(unique(microbiome_meta$timepoint))),
+  cex=2, lwd=1
+  ) 
+
+boxplot(
+  mod$distances ~ mod$group,
+  main= "Distance to Centroid",
+  xlab="kit", ylab="Distance",
+  col=get_wants_hue(3)
+)
+
+
+```
+
+## Subsetting
+
+Make a phyloseq object that only contains OTUs belonging to a specific group or clade.
+
+```{r}
+#| label: abundances-clade
+#Make a phyloseq object that only contains OTUs belonging to a specific group or clade.
+
+(physeq_bac <- subset_taxa(physeq, Kingdom=="Bacteria"))
+(physeq_arc <- subset_taxa(physeq, Kingdom=="Archaea"))
+(physeq_opi <- subset_taxa(physeq, Kingdom=="Opisthokonta"))
+(physeq_sar <- subset_taxa(physeq, Kingdom=="SAR"))
+```
+
+```{r}
+#| label: fig-richness-bac
+#| fig-cap: A diversity plot showing metadata information for bacteria.
+(richness.plot.bact <- plot_richness_custom(
+  physeq_bac, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.bact$data, file='richness_bac_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.bact, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-arc
+#| fig-cap: A diversity plot showing metadata information for arc
+(richness.plot.arc <- plot_richness_custom(
+  physeq_arc, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.arc$data, file='richness_arc_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.arc, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-sar
+#| fig-cap: A diversity plot showing metadata information for sar
+(richness.plot.sar <- plot_richness_custom(
+  physeq_sar, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.sar$data, file='richness_sar_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.sar, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-opi
+#| fig-cap: A diversity plot showing metadata information for sar
+(richness.plot.opi <- plot_richness_custom(
+  physeq_opi, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.opi$data, file='richness_opi_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.opi, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+Although doing the plots individually is usually the best approach, it can be done in a one step using map functions:
+
+```{r}
+#| label: richness-per-taxa
+#| eval: false
+#| fig-cap: A diversity plot showing metadata information for sar
+
+richness_plots <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar"))%>%
+  map(
+    ~ .x %>%
+      plot_richness_custom(
+        x="treatment_timepoint", color = "sample",
+        shape ="treatment", measures=c("Shannon", "InvSimpson")
+      )
+  )
+```
+
+## Shepard plots for each taxa group
+
+```{r}
+#| label: Shepard-per-taxa
+nmds_list <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar")) %>%
+  map(~.x %>% ordinate(method = "NMDS", distance = "bray"))
+
+shepard_plots <- nmds_list %>%
+  map(~ vegan::stressplot(.x))
+```
+
+## Ordination plots per taxa
+
+```{r}
+ordination_plots <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar")) %>%
+  map2(
+    nmds_list,
+    function(x, y){
+      plot_ordination(
+      x, y,
+      type ="samples", color = "timepoint",
+      shape = "treatment",
+      title = "NMDS, bray-curtis dissimilarity"
+      )+
+      geom_point(size=3)+
+      theme_bw()+
+      theme(legend.title = element_blank())+
+      theme(strip.background = element_rect(fill="white" ))
+    }
+    )
+
 ```

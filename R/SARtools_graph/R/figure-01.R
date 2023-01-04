@@ -2,7 +2,7 @@
 library(tidyverse)
 # Load custom function read_SARtools_into_tibble
 source("SARtools_graph/R/common.R")
-source("SARtools_graph/R/figure-01_colors.R")
+source("scripts/configuration_format.R")
 
 # Configuration
 # Save dir path into variable
@@ -45,13 +45,10 @@ data$Lvl_2_letter <- fct_reorder( # Again the same
 )
 
 
-# Check before plot
-if(length(levels_colors) != length(levels(data$Lvl_2_letter))){
-  stop(
-    "There are a number of different levels and colors. Consider adding ",
-    "or removing colors or coloring automatically by removing calls to the ",
-    "scale_color_manual function.")   
-}
+# Create levels colors
+levels_colors <- length(levels(data$Lvl_2_letter)) %>%
+  get_wants_hue()
+
 # Plotting figures
 ## Save ggplot into figure variable
 figure <- data %>%

@@ -46,6 +46,10 @@ ggplot_text_size <- text_base_size / ggplot2::.pt
 # Use: ggsave(plot1, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
 # Use: ggsave(plot1, filename="myplot.pdf", width = fig.witdh, height=fig.height, units = "mm")
 
+save_default <- function(...){
+  ggsave(..., width = fig.witdh, height=fig.height, units = "mm")
+}
+
 # Set locale if you want danish month names etc.
 #Sys.setlocale(locale = "Danish_Denmark")  # For danish axes on plot
 Sys.setlocale(locale = "English_Denmark") # For english axes on plot

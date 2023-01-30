@@ -1,0 +1,198 @@
+---
+title: "Plots"
+format: html
+editor: visual
+---
+
+First, we create the physeq object,
+
+```{r}
+###----Load packages----
+
+library("phyloseq"); packageVersion("phyloseq")
+library("ggplot2"); packageVersion("ggplot2")
+library("tidyverse"); packageVersion("tidyverse")
+
+###----Import data----
+set.seed(42)
+source('create_physeq.R')
+```
+
+Now, we ordinate:
+
+```{r}
+(physeq_nmds <- ordinate(physeq_rel, method = "NMDS", distance = "bray"))
+```
+
+Now, we configure format:
+
+```{r}
+source('../scripts/configuration_format.R')
+```
+
+## Shepard plots -all
+
+```{r}
+# Shepard plot - all
+vegan::stressplot(physeq_nmds)
+```
+
+## NMDS plot
+
+```{r}
+
+plot_nmds <- function(x, y, ...){
+  plot_ordination(x, y, ...)+
+  geom_point(size=3)+
+  theme_bw()+
+  theme(legend.title = element_blank())+
+  theme(strip.background = element_rect(fill="white" ))+
+  stat_ellipse()
+}
+
+nmds <- list(
+  all = plot_nmds(
+    physeq_rel, physeq_nmds,type =" samples", color = "layer",shape = "age"
+    ),
+  phyla = plot_nmds(
+    physeq_p, physeq_nmds, type =" samples", color = "layer", shape = "age",
+    ),
+    class = plot_nmds(
+    physeq_c, physeq_nmds, type =" taxa", color = "phylum", shape = "age",
+    )
+)
+
+plot_grid(nmds$all, nmds$phyla)
+```
+
+## Richness plot
+
+```{r}
+###----Richness all----
+
+richness_plot <- plot_richness(
+  physeq, x="layer", color =  "depth",
+  measures=c("Observed","Shannon","Simpson","InvSimpson")
+  )
+richness_plot <- richness_plot + geom_boxplot(data = p1$data, aes(color = NULL), alpha = 0.05)+
+  theme_bw()+
+  theme(legend.title = element_blank())+
+  theme(legend.position = "right") +
+  theme(strip.background = element_rect(fill="white" ))
+richness_plot
+```
+
+## Stacked bar plots
+
+```{r}
+physeq_mean_rel_phylum <- physeq_mean_rel |>
+  tax_glom(taxrank = "Phylum") |>
+  transform_sample_counts(function(x) x/sum(x)*100) 
+```
+
+Since we get too many phyla to plot in a stacked barplot, we will filter the low abundant ones and put them into one category. To do this, we will use the power of tidyverse again. First, we will create a normal data frame out of the phyloseq object and then add another column where all taxa with abundance lower than 1% will be renamed to "\< 1%".
+
+```{r}
+#transform phyloseq object to a data frame (DF)
+physeq_mean_rel_phylumDF<- psmelt(physeq_mean_rel_phylum)
+
+#make the phyla characters, not factors
+physeq_mean_rel_phylumDF$Phylum <- as.character(physeq_mean_rel_phylumDF$Phylum)
+
+
+#there are some reads that were assigned only to the kingdom level, 
+# i.e. NA on the phylum level, so we will rename them
+physeq_mean_rel_phylumDF <- physeq_mean_rel_phylumDF %>% 
+  mutate(Phylum = replace(Phylum, Phylum == "NA", "unassigned"))
+
+physeq_mean_rel <- transform_sample_counts(physeq_mean_rel, function(x) x/sum(x)*100)       #careful when duplicates // /sum(x)*100
+
+# add new column with renamed low abundant taxa
+physeq_mean_rel_phylumDF <- physeq_mean_rel_phylumDF %>% 
+  mutate(Phylum2 = replace(Phylum, Abundance < 3, "< 3%"))
+
+#reorder the phyla so that they are stacked according to abundance
+physeq_mean_rel_phylumDF$Phylum <- reorder(physeq_mean_rel_phylumDF$Phylum2,
+                                           physeq_mean_rel_phylumDF$Abundance)
+
+n_phyla <- length(levels(physeq_mean_rel_phylumDF$Phylum))
+
+stacked_plot <- physeq_mean_rel_phylumDF |>
+  ggplot(aes(depth, Abundance, fill=Phylum)) +
+  geom_bar(stat = "identity") +
+  theme_bw()+
+  labs(x= "depth [cm]",y= "Relative abundance [%]",
+     fill= "Phyla")+
+  scale_fill_manual(values = get_wants_hue(n_phyla))+
+  theme(legend.position="bottom") +
+  scale_x_continuous(breaks = seq(10, 100, 10))
+stacked_plot    
+```
+
+https://wilkelab.org/cowplot/articles/plot_grid.html
+
+```{r}
+final <- plot_grid(stacked_plot, richness_plot,nrow = 2,labels = c("A", "B"))
+
+save_default(final, filename="test.pdf")
+
+```
+
+## ANOVA
+
+```{r}
+library("microbiome"); packageVersion("microbiome")
+library("vegan"); packageVersion("vegan")
+
+otu1 <- microbiome::abundances(physeq)
+meta1 <- microbiome::meta(physeq)
+
+
+permanova_depth <- vegan::adonis(t(otu1)~depth, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_depth$aov.tab))
+permanova_age <- vegan::adonis(t(otu1)~age, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_age$aov.tab))
+permanova_layer <- vegan::adonis(t(otu1)~layer, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_layer$aov.tab))
+permanova_SOM <- vegan::adonis(t(otu1)~SOM, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_SOM$aov.tab))
+permanova_H2O <- vegan::adonis(t(otu1)~H2O, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_H2O$aov.tab))
+permanova_pH <- vegan::adonis(t(otu1)~pH, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_pH$aov.tab))
+permanova_age_num <- vegan::adonis(t(otu1)~age_num, data = meta1, permutations=999, method = "bray")
+print(as.data.frame(permanova_age_num$aov.tab))
+# permanova_myxococ <- vegan::adonis(t(otu1)~bacpred, data = meta1, permutations=999, method = "bray")
+# print(as.data.frame(permanova_myxococ$aov.tab))
+# permanova_protozoa <- vegan::adonis(t(otu1)~protozoa, data = meta1, permutations=999, method = "bray")
+# print(as.data.frame(permanova_protozoa$aov.tab))
+
+#same problem as with vegan: multicollinearity produces unrealistic significances!!!
+
+
+#Calculate beta dispersion (in this case - the dispersion between the kits)
+
+dist <- vegan::vegdist(t(otu1), method="bray")
+mod <- vegan::betadisper(dist, meta1$age, type="centroid")
+mod
+mod$age <- meta$age
+TukeyHSD(mod)
+write.table(print(results), file='tukey_age_all.tsv', quote=FALSE, sep='\t')
+
+mod <- vegan::betadisper(dist, meta1$layer, type="centroid")
+mod
+mod$layer <- meta$layer
+TukeyHSD(mod)
+write.table(TukeyHSD(mod), file='tukey_layer_all.tsv', quote=FALSE, sep='\t')
+
+par(mfrow = c(1,2))
+plot(mod,  hull=FALSE, ellipse=TRUE, main = "PCoA, layer", sub=NULL, col=c("#2f85fe", "#e05436", "#009453"), cex=2, lwd=1) #+
+boxplot(mod$distances ~ mod$group, main= "Distance to Centroid", xlab="layer", ylab="Distance", col= c("#2f85fe", "#e05436", "#009453"))
+
+par(mfrow = c(1,1))
+# dev.off()
+mod <- vegan::betadisper(dist, meta1$depth, type="centroid")
+mod
+mod$depth <- meta$depth
+TukeyHSD(mod)
+```

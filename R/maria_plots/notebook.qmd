@@ -1,0 +1,597 @@
+---
+title: "OTU Analysis"
+format: html
+editor: visual
+---
+
+## OTU Analysis
+
+This interactive notebook is made with Quarto. Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+# Preparing the environment
+
+## Checking for missing dependencies
+
+```{r}
+#|label: dependencies
+#|message: false
+#|warning: false
+#|echo: false
+
+if (!require("BiocManager")){install.packages("BiocManager")}
+if (!require("phyloseq")){BiocManager::install("phyloseq")}
+if (!require("tidyverse")){install.packages("tidyverse")}
+if (!require("devtools")){install.packages("devtools")}
+if (!require("pairwiseAdonis")){devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")}
+if(!require("microbiome")){BiocManager::install("microbiome")}
+
+library(tidyverse)
+library(phyloseq)
+```
+
+## Some formatting issues
+
+Please skip this bit if you want to use the default values. These are Nature's guidelines for generating figures and they look very nice for printing (credits to Palle Villesen).
+
+```{r}
+source("scripts/configuration_format.R")
+
+```
+
+### Preparing I Want Hue colors palette
+
+We are going to use I want Hue to make the different palettes. Notice that you should change the seed and palette in order to get different colors (see @fig-palette).
+
+```{r}
+#| label: fig-palette
+#| fig-cap: Colour palettes from I want Hue
+#| fig-subcap: 
+#|   - "Colorblind friendly"
+#|   - "Default"
+#| layout-ncol: 2
+get_wants_hue(n = 4,seed = 5) %>%
+  scales::show_col()
+
+get_wants_hue(16, "default") %>%
+  scales::show_col()
+```
+
+# Preparing data
+
+## Reading OTU table and taxonomic csv
+
+```{r}
+#|label: read-files
+OTU_CSV <- "../maria_plots/RNA_OTU_tripl_wo1.csv"
+TAXA_CSV <- "../maria_plots/RNA_TAX_onlyanno.csv"
+otu <- readr::read_delim(OTU_CSV,delim = ";") %>%
+  phyloseq::otu_table(taxa_are_rows = TRUE)
+taxa <- readr::read_csv(TAXA_CSV)%>%
+  as.matrix() %>%
+  phyloseq::tax_table()
+```
+
+## Creating Metadata table
+
+```{r}
+#|label: metadata
+n_samples <- 6
+
+meta <- tibble(
+  rowname = colnames(otu),
+  sample = rep(1:n_samples, ncol(otu)/n_samples),
+  timepoint = c(rep("T0", n_samples), rep("T1", n_samples), rep("T2", n_samples), rep("T4", n_samples)),
+  treatment = rep(c(rep("Control", 3), rep("Alfalfa", 3)), 4)
+) %>%
+  tidyr::unite("sample_time", c("timepoint", "sample"), remove = FALSE) %>%
+  tidyr::unite("sample_type", c("sample", "treatment"), remove = FALSE) %>%
+  tidyr::unite("treatment_timepoint", c("treatment", "timepoint"), remove = FALSE) %>%
+  tidyr::unite("treatment_timepoint", c("treatment", "timepoint"), remove = FALSE) %>%
+  tidyr::unite("sample_treatment_timepoint", c("sample", "treatment", "timepoint"), remove = FALSE) %>%
+  tibble::column_to_rownames() %>%
+  phyloseq::sample_data()
+```
+
+## Creating `phyloseq` object
+
+Now, we combine OTU table, taxonomy table and metadata into a `phyloseq` object.
+
+```{r}
+#|label: phyloseq
+(physeq <- phyloseq(otu, taxa, meta))
+```
+
+## Dealing with taxonomic categories
+
+We will remove the SILVA prefix, anything labelled "unknown" (this will not affect abundances) and replace spaces with underscores.
+
+```{r}
+#|label: prepro-taxa
+# Remove prefix
+silva_prefix <- c(
+  "k_", "p_", "c_", "o_", "f_", "g_", "s_"
+)
+tax_table(physeq) <- silva_prefix %>%
+  paste(collapse = "|") %>%
+  gsub("", tax_table(physeq))
+
+tax_table(physeq) <- gsub("Unknown.*", "", tax_table(physeq))
+
+tax_table(physeq) <- gsub(" ", "_", tax_table(physeq))
+
+head(tax_table(physeq), 2)
+```
+
+## Making unique OTU labels
+
+First, we define the following function in order to create the new unique labels:
+
+```{r}
+#|label: makeTaxLabel
+makeTaxLabel <- function(physeq){
+  tax_table(physeq) %>%
+  as.data.frame() %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::everything(),~ na_if(.,""))) %>%
+  purrr::transpose() %>%
+  purrr::map_chr(~as.character(.x) %>% na.omit() %>% tail(1)) %>%
+  make.unique()
+}
+```
+
+Now, we assign these new labels:
+
+```{r}
+#|label: asisgn_new_labels
+taxa_names(physeq) <- makeTaxLabel(physeq)
+```
+
+# Inspecting data
+
+Now, we can inspect the resulting tables (see @tbl-otu and @tbl-taxa).
+
+```{r}
+#| label: tbl-otu
+#| tbl-cap: "OTU table"
+#| tbl-subcap: 
+#|   - "Head of the table"
+#|   - "Tail of the table"
+#| layout-nrow: 2
+#| echo: fenced
+
+library(knitr)
+kable(head(otu_table(physeq)))
+kable(tail(otu_table(physeq)))
+
+```
+
+```{r}
+#| label: tbl-taxa
+#| tbl-cap: "Taxonomic table"
+#| tbl-subcap: 
+#|   - "Head of the table"
+#|   - "Tail of the table"
+#| layout-nrow: 2
+#| echo: fenced
+
+library(knitr)
+kable(head(tax_table(physeq)))
+kable(tail(tax_table(physeq)))
+```
+
+# Data analysis
+
+## Perform an ordination using Nonmetric Multidimensional Scaling
+
+Now, we ordinate using the NMDS method and bray distance. NMDS performs a Non-metric MultiDimenstional Scaling of a sample-wise ecological distance matrix onto a user-specified number of axes, k (in this case 2).
+
+```{r}
+#| label: ordination 
+(physeq_nmds <- ordinate(physeq, method = "NMDS", distance = "bray"))
+
+```
+
+## Goodness of Fit and Shepard Plot for Nonmetric Multidimensional Scaling
+
+Now, we find the goodness of fit measure for the points in the previous nonmetric multidimensional scaling. The Shepard diagram is shown in @fig-stressplot .
+
+```{r}
+#| label: fig-stressplot 
+#| fig-cap: A plot of ordination distances and monotone or linear fit line against original dissimilarities.
+vegan::stressplot(physeq_nmds)
+
+```
+
+```{r}
+#| label: fig-NMDS-plot-all 
+#| fig-cap: A ordination plot showing metadata information.
+(NMDS.plot.all <- physeq %>%
+  plot_ordination(
+    physeq_nmds,
+    type ="samples",
+    color = "timepoint",
+    shape = "treatment",
+    title = "NMDS, bray-curtis dissimilarity"
+    )+
+  geom_point(size=3)+
+  theme_bw()+
+  theme(
+    legend.title = element_blank(),
+    strip.background = element_rect(fill="white" ))
+)
+# ggsave(NMDS.plot.all, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+## Permutational Multivariate Analysis of Variance Using Distance Matrices (Adonis test)
+
+The `adonis()` function is soft deprecated and we should use `adonis2()` instead. First, we do a test with the formula distance \~ treatment.
+
+```{r}
+#| label: test-adonis-treatment
+metadata <- as(sample_data(physeq), "data.frame")
+(
+test.adonis.treatment <- vegan::adonis2(
+  distance(physeq, method="bray") ~ treatment, data = metadata
+  )
+)
+```
+
+Now, we use treament and timepoint.
+
+```{r}
+#| label: test-adonis-treatment-timepoint
+(
+test.adonis.treatment.timepoint <- vegan::adonis2(
+  distance(physeq, method="bray") ~ treatment_timepoint, data = metadata
+  )
+)
+```
+
+## Pairwise Adonis test
+
+```{r}
+#| label: pairwise-adonis
+permanova <- vegan::adonis2(
+  t(otu)~ treatment, data = metadata, permutations=999, method = "bray"
+  )
+library(pairwiseAdonis)
+
+post_hoc_permanova <- pairwiseAdonis::pairwise.adonis(
+  t(otu), metadata$treatment_timepoint,
+  sim.function = "vegdist",sim.method = "bray",
+  p.adjust.m = "fdr", reduce = NULL, perm = 999
+  )
+```
+
+```{r}
+#| label: tbl-post_hoc_permanova
+#| tbl-cap: "Results for multilevel pairwise comparison using Adonis Test"
+kable(post_hoc_permanova)
+```
+
+## Plot alpha diversity
+
+```{r}
+#| label: fig-richness-all 
+#| fig-cap: A diversity plot showing metadata information.
+
+# Create custom function
+plot_richness_custom <- function(...){
+  plot_richness(...) +
+  geom_boxplot(alpha = 0.1) +
+  theme_bw()+
+  theme(
+    legend.title = element_blank(),
+    legend.position = "none",
+    strip.background = element_rect(fill="white"),
+    axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+(
+  richness.plot.all <- plot_richness_custom(
+    physeq, x="treatment_timepoint", 
+    color = "sample", shape ="treatment",
+    measures=c("Shannon", "InvSimpson")
+    )
+)
+# write the calculations in a file
+write_tsv(richness.plot.all$data, 'richness_all_calc_data_wo_plant.tsv')
+# ggsave(richness.plot.all, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+## Plot stacked barplots
+
+For stacked barplots, we will work with means of replicates using the `merge_samples` function. The default of this function is `merge_samples(x, group, fun= mean)`.
+
+```{r}
+#|label: replicates_means
+number_of_replicates <- 3
+physeq_all_mean <- physeq %>%
+  merge_samples("treatment_timepoint") %>%
+  #After merging, we divide by the number of replicates
+  transform_sample_counts(function(x) x/ number_of_replicates)
+```
+
+Now, we are going to inspect how many taxonomic groups are for each level:
+
+```{r}
+#| label: tbl-categories
+#| tbl-cap: "Number of unique categories for each Taxonomic Level"
+tax_table(physeq_all_mean) %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(),names_to = "Tax.Level", values_to = "Tax") %>%
+  group_by(Tax.Level) %>%
+  summarise(n = length(unique(Tax))) %>%
+  kable()
+```
+
+Now, we agglomerate at different taxonomic levels:
+
+```{r}
+#|label: agglomerate 
+#agglomeration on the Phylum level
+(physeq_all_mean_phylum <- tax_glom(physeq_all_mean, taxrank = "Phylum"))
+
+#agglomeration on the Phylum level
+(physeq_all_mean_kingdom <- tax_glom(physeq_all_mean, taxrank = "Kingdom"))
+```
+
+Check sample sums to make sure nothing was deleted due to NAs (should sum up to 1)
+
+```{r}
+#| label: tbl-sample_sums
+#| tbl-cap: "Sample sums"
+tibble(
+  samples = names(sample_sums(physeq_all_mean)),
+  all = sample_sums(physeq_all_mean),
+  phylum = sample_sums(physeq_all_mean_phylum),
+  kingdom = sample_sums(physeq_all_mean_kingdom)
+) %>% 
+  kable()
+```
+
+Since we get too many phyla to plot in a stacked barplot, we will filter the low abundant ones and put them into one category. To do this, we will use the power of tidyverse again
+
+```{r}
+#| label: prepro-stacked
+physeq_all_mean_phylumDF<- psmelt(physeq_all_mean_phylum) %>%
+  mutate(
+    Phylum2 =  as.factor(Phylum) %>%
+      replace(Abundance < 1, "< 1%"),
+    
+  )
+physeq_all_mean_kingdomDF<- psmelt(physeq_all_mean_kingdom) %>%
+  mutate(
+    Kingdom2 =  as.factor(Kingdom) %>%
+      replace(Abundance < 0.5, "< 0.5%")
+  )
+
+```
+
+Reorder the phyla and kingdom so that they are stacked according to abundance
+
+```{r}
+#| label: prepro-reorder-stacked
+
+physeq_all_mean_phylumDF$Phylum2 <- reorder(
+  physeq_all_mean_phylumDF$Phylum2,
+  physeq_all_mean_phylumDF$Abundance
+  )
+
+physeq_all_mean_kingdomDF$Kingdom <- reorder(
+  physeq_all_mean_kingdomDF$Kingdom,
+  physeq_all_mean_kingdomDF$Abundance
+  )
+```
+
+```{r}
+#| label: fig-stacked-phylum
+#| fig-cap: Relative abundance per phylum.
+(
+stacked_phylum_plot <- physeq_all_mean_phylumDF %>%
+    ggplot(aes(Sample, Abundance, fill=Phylum2)) +
+    geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = get_wants_hue(length(
+      unique(physeq_all_mean_phylumDF$Phylum2)
+      ))
+    ) +
+  labs(y= "Relative abundance [%]",
+       fill= "Phlya") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+```
+
+```{r}
+#| label: fig-stacked-kingdom
+#| fig-cap: Relative abundance per phylum.
+(
+stacked_kingdom_plot <- physeq_all_mean_kingdomDF %>%
+    ggplot(aes(Sample, Abundance, fill=Kingdom2)) +
+    geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = get_wants_hue(length(
+      unique(physeq_all_mean_kingdomDF$Kingdom2)),seed =  2)
+    ) +
+  labs(y= "Relative abundance [%]",
+       fill= "Kingdom") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+```
+
+## Anova
+
+```{r}
+#| label: microbiome-anovatest
+library("microbiome")
+
+microbiome_otu <- microbiome::abundances(physeq)
+microbiome_meta <- microbiome::meta(physeq)
+
+
+microbiome_permanova <- vegan::adonis2(
+  t(microbiome_otu)~treatment_timepoint,
+  data = microbiome_meta,
+  permutations=999, method = "bray"
+  )
+
+```
+
+## Calculate beta dispersion (in this case - the dispersion between the kits)
+
+```{r}
+#|label: betadisper
+
+dist <- vegan::vegdist(t(microbiome_otu), method="bray")
+
+(mod <- vegan::betadisper(dist, microbiome_meta$treatment_timepoint, type="centroid"))
+
+
+mod$treatment_timepoint <- microbiome_meta$treatment_timepoint
+```
+
+Compute Tukey Honest Significant Differences
+
+```{r}
+#| label: fig-TukeyHSD-beta-dispersion
+#| layout-ncol: 2
+
+(beta_Tukey <- TukeyHSD(mod))
+
+plot(
+  mod,  hull=FALSE, ellipse=TRUE,
+  main = "PCoA", sub=NULL,
+  col= get_wants_hue(length(unique(microbiome_meta$timepoint))),
+  cex=2, lwd=1
+  ) 
+
+boxplot(
+  mod$distances ~ mod$group,
+  main= "Distance to Centroid",
+  xlab="kit", ylab="Distance",
+  col=get_wants_hue(3)
+)
+
+
+```
+
+## Subsetting
+
+Make a phyloseq object that only contains OTUs belonging to a specific group or clade.
+
+```{r}
+#| label: abundances-clade
+#Make a phyloseq object that only contains OTUs belonging to a specific group or clade.
+
+(physeq_bac <- subset_taxa(physeq, Kingdom=="Bacteria"))
+(physeq_arc <- subset_taxa(physeq, Kingdom=="Archaea"))
+(physeq_opi <- subset_taxa(physeq, Kingdom=="Opisthokonta"))
+(physeq_sar <- subset_taxa(physeq, Kingdom=="SAR"))
+```
+
+```{r}
+#| label: fig-richness-bac
+#| fig-cap: A diversity plot showing metadata information for bacteria.
+(richness.plot.bact <- plot_richness_custom(
+  physeq_bac, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.bact$data, file='richness_bac_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.bact, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-arc
+#| fig-cap: A diversity plot showing metadata information for arc
+(richness.plot.arc <- plot_richness_custom(
+  physeq_arc, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.arc$data, file='richness_arc_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.arc, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-sar
+#| fig-cap: A diversity plot showing metadata information for sar
+(richness.plot.sar <- plot_richness_custom(
+  physeq_sar, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.sar$data, file='richness_sar_calc_data.tsv', quote=FALSE, sep='\t')
+
+# ggsave(richness.plot.sar, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+```{r}
+#| label: fig-richness-opi
+#| fig-cap: A diversity plot showing metadata information for sar
+(richness.plot.opi <- plot_richness_custom(
+  physeq_opi, x="treatment_timepoint", color = "sample",
+  shape ="treatment", measures=c("Shannon", "InvSimpson")
+  )
+)
+write.table(richness.plot.opi$data, file='richness_opi_calc_data.tsv', quote=FALSE, sep='\t')
+
+#ggsave(richness.plot.opi, filename="myplot.png", width = fig.witdh, height=fig.height, units = "mm")
+```
+
+Although doing the plots individually is usually the best approach, it can be done in a one step using map functions:
+
+```{r}
+#| label: richness-per-taxa
+#| eval: false
+#| fig-cap: A diversity plot showing metadata information for sar
+
+richness_plots <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar"))%>%
+  map(
+    ~ .x %>%
+      plot_richness_custom(
+        x="treatment_timepoint", color = "sample",
+        shape ="treatment", measures=c("Shannon", "InvSimpson")
+      )
+  )
+```
+
+## Shepard plots for each taxa group
+
+```{r}
+#| label: Shepard-per-taxa
+nmds_list <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar")) %>%
+  map(~.x %>% ordinate(method = "NMDS", distance = "bray"))
+
+shepard_plots <- nmds_list %>%
+  map(~ vegan::stressplot(.x))
+```
+
+## Ordination plots per taxa
+
+```{r}
+ordination_plots <- list(physeq, physeq_arc, physeq_bac, physeq_opi, physeq_sar) %>%
+  magrittr::set_names(c("all", "arc", "bac", "opi", "sar")) %>%
+  map2(
+    nmds_list,
+    function(x, y){
+      plot_ordination(
+      x, y,
+      type ="samples", color = "timepoint",
+      shape = "treatment",
+      title = "NMDS, bray-curtis dissimilarity"
+      )+
+      geom_point(size=3)+
+      theme_bw()+
+      theme(legend.title = element_blank())+
+      theme(strip.background = element_rect(fill="white" ))
+    }
+    )
+
+```

@@ -158,59 +158,147 @@ save_default(final, filename="test.pdf")
 
 ## ANOVA
 
+First, create objects and metadata (change to numeric when necessary)
+
 ```{r}
 library("microbiome"); packageVersion("microbiome")
 library("vegan"); packageVersion("vegan")
 
 otu1 <- microbiome::abundances(physeq)
-meta1 <- microbiome::meta(physeq)
+meta1 <- microbiome::meta(physeq)|>
+  mutate(
+    depth = as.numeric(depth),
+    SOM = as.numeric(SOM),
+    pH = as.numeric(pH),
+    H2O = as.numeric(H2O),
+    age_num = as.numeric(age_num)
+     )
+```
 
+Let's now inspect depth:
 
-permanova_depth <- vegan::adonis(t(otu1)~depth, data = meta1, permutations=999, method = "bray")
+```{r}
+
+permanova_depth <- vegan::adonis(
+  t(otu1)~depth, data = meta1, permutations=999, method = "bray"
+  )
 print(as.data.frame(permanova_depth$aov.tab))
-permanova_age <- vegan::adonis(t(otu1)~age, data = meta1, permutations=999, method = "bray")
+
+```
+
+Now age:
+
+```{r}
+permanova_age <- vegan::adonis(
+  t(otu1)~age, data = meta1, permutations=999, method = "bray"
+  )
 print(as.data.frame(permanova_age$aov.tab))
+```
+
+Now layer:
+
+```{r}
 permanova_layer <- vegan::adonis(t(otu1)~layer, data = meta1, permutations=999, method = "bray")
 print(as.data.frame(permanova_layer$aov.tab))
+```
+
+Now SOM:
+
+```{r}
 permanova_SOM <- vegan::adonis(t(otu1)~SOM, data = meta1, permutations=999, method = "bray")
 print(as.data.frame(permanova_SOM$aov.tab))
+
+```
+
+H20
+
+```{r}
 permanova_H2O <- vegan::adonis(t(otu1)~H2O, data = meta1, permutations=999, method = "bray")
 print(as.data.frame(permanova_H2O$aov.tab))
+```
+
+```{r}
 permanova_pH <- vegan::adonis(t(otu1)~pH, data = meta1, permutations=999, method = "bray")
 print(as.data.frame(permanova_pH$aov.tab))
+
+```
+
+Finally, age_num:
+
+```{r}
 permanova_age_num <- vegan::adonis(t(otu1)~age_num, data = meta1, permutations=999, method = "bray")
 print(as.data.frame(permanova_age_num$aov.tab))
-# permanova_myxococ <- vegan::adonis(t(otu1)~bacpred, data = meta1, permutations=999, method = "bray")
-# print(as.data.frame(permanova_myxococ$aov.tab))
-# permanova_protozoa <- vegan::adonis(t(otu1)~protozoa, data = meta1, permutations=999, method = "bray")
-# print(as.data.frame(permanova_protozoa$aov.tab))
+```
 
-#same problem as with vegan: multicollinearity produces unrealistic significances!!!
+PCoA with age:
 
-
-#Calculate beta dispersion (in this case - the dispersion between the kits)
-
+```{r}
 dist <- vegan::vegdist(t(otu1), method="bray")
-mod <- vegan::betadisper(dist, meta1$age, type="centroid")
-mod
-mod$age <- meta$age
-TukeyHSD(mod)
-write.table(print(results), file='tukey_age_all.tsv', quote=FALSE, sep='\t')
+mod_age <- vegan::betadisper(dist, meta1$age, type="centroid")
+mod_age
+mod_age$age <- meta$age
+TukeyHSD(mod_age)
+```
 
-mod <- vegan::betadisper(dist, meta1$layer, type="centroid")
-mod
-mod$layer <- meta$layer
-TukeyHSD(mod)
-write.table(TukeyHSD(mod), file='tukey_layer_all.tsv', quote=FALSE, sep='\t')
+PCoA with layer:
 
+```{r}
+mod_layer <- vegan::betadisper(dist, meta1$layer, type="centroid")
+mod_layer
+mod_layer$layer <- meta$layer
+TukeyHSD(mod_layer)
+```
+
+Plot for age with eigenvalues:
+
+```{r}
+get_eigenvalue <- function(mod, number, digits = 2){
+  mod |> pluck('eig', number) |>
+    round(digits) |> 
+    format(nsmall = digits)
+}
+x_label <- paste0('PCoA 1 (eigenvalue = ', get_eigenvalue(mod_age, 1), ')')
+y_label <- paste0('PCoA 2 (eigenvalue = ', get_eigenvalue(mod_age, 2), ')')
 par(mfrow = c(1,2))
-plot(mod,  hull=FALSE, ellipse=TRUE, main = "PCoA, layer", sub=NULL, col=c("#2f85fe", "#e05436", "#009453"), cex=2, lwd=1) #+
-boxplot(mod$distances ~ mod$group, main= "Distance to Centroid", xlab="layer", ylab="Distance", col= c("#2f85fe", "#e05436", "#009453"))
+plot(
+  mod_age,  hull=FALSE, ellipse=TRUE,
+  main = "PCoA, age", sub=NULL,
+  col=c("#2f85fe", "#e05436", "#009453"),
+  cex=2, lwd=1,
+  xlab = x_label,
+  ylab = y_label
+  ) #+
+```
 
+Plot for layer with eigenvalues:
+
+```{r}
+get_variance <- function(mod, number, digits = 2){
+  variance <- mod$eig[number]/sum(mod$eig)*100
+  variance |>
+    round(digits) |> 
+    format(nsmall = digits)
+}
+x_label <- paste0('PCoA 1 (', get_variance(mod_layer, 1),'%)')
+y_label <- paste0('PCoA 2 (', get_variance(mod_layer, 2),'%)')
+par(mfrow = c(1,2))
+plot(
+  mod_layer,  hull=FALSE, ellipse=TRUE,
+  main = "PCoA, layer", sub=NULL,
+  col=c("#2f85fe", "#e05436", "#009453"),
+  cex=2, lwd=1,
+  xlab = x_label,
+  ylab = y_label
+  ) #+
+```
+
+```{r}
+boxplot(
+  mod_layer$distances ~ mod_layer$group,
+  main= "Distance to Centroid",
+  xlab="layer", ylab="Distance",
+  col= c("#2f85fe", "#e05436", "#009453")
+  )
 par(mfrow = c(1,1))
 # dev.off()
-mod <- vegan::betadisper(dist, meta1$depth, type="centroid")
-mod
-mod$depth <- meta$depth
-TukeyHSD(mod)
 ```

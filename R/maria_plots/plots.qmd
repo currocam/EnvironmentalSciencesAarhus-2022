@@ -40,8 +40,14 @@ vegan::stressplot(physeq_nmds)
 ## NMDS plot
 
 ```{r}
+physeq_rel
+physeq_p
+```
 
-plot_nmds <- function(x, y, ...){
+```{r}
+
+plot_nmds <- function(x, ...){
+  y <- ordinate(x, method = "NMDS", distance = "bray")
   plot_ordination(x, y, ...)+
   geom_point(size=3)+
   theme_bw()+
@@ -52,17 +58,29 @@ plot_nmds <- function(x, y, ...){
 
 nmds <- list(
   all = plot_nmds(
-    physeq_rel, physeq_nmds,type =" samples", color = "layer",shape = "age"
+    physeq_rel,type ="samples", color = "layer",shape = "age"
     ),
   phyla = plot_nmds(
-    physeq_p, physeq_nmds, type =" samples", color = "layer", shape = "age",
+    physeq_p, type ="samples", color = "layer", shape = "age",
     ),
-    class = plot_nmds(
-    physeq_c, physeq_nmds, type =" taxa", color = "phylum", shape = "age",
+  class = plot_nmds(
+    physeq_c, type ="samples", color = "layer", shape = "age",
     )
 )
 
-plot_grid(nmds$all, nmds$phyla)
+plot_grid(nmds$all, nmds$phyla, nmds$class)
+```
+
+```{r}
+plot_ordination(
+  physeq_rel, physeq_nmds,
+  type ="samples", color = "layer",shape = "age"
+  )+
+  geom_point(size=3)+
+  theme_bw()+
+  theme(legend.title = element_blank())+
+  theme(strip.background = element_rect(fill="white" ))+
+  stat_ellipse()
 ```
 
 ## Richness plot

@@ -92,7 +92,8 @@ richness_plot <- plot_richness(
   physeq, x="layer", color =  "depth",
   measures=c("Observed","Shannon","Simpson","InvSimpson")
   )
-richness_plot <- richness_plot + geom_boxplot(data = p1$data, aes(color = NULL), alpha = 0.05)+
+richness_plot <- richness_plot + geom_boxplot(
+  data = richness_plot$data, aes(color = NULL), alpha = 0.05)+
   theme_bw()+
   theme(legend.title = element_blank())+
   theme(legend.position = "right") +
@@ -301,4 +302,69 @@ boxplot(
   )
 par(mfrow = c(1,1))
 # dev.off()
+```
+
+First, we can plot 95% confidence levels:
+
+```{r}
+plot(TukeyHSD(mod_layer))
+```
+
+We can add p-values from Tukey Test to the box plot of the distances:
+
+```{r}
+
+get_pos_whisker <- function(x){
+  # Calculate whisker position
+  hinge <- as.numeric(quantile(x, probs = 0.75))
+  upper_max <- hinge +IQR(x)*1.5 
+  x |> 
+    keep(~ . < upper_max) |>
+    max()
+}
+# Calculate label position
+pos <-  c(
+  by(mod_layer$distances, mod_layer$group, get_pos_whisker)
+  )
+
+# Custom label
+custom_label <- c('A', 'V', 'AV', 'T2')
+
+tibble(
+  distances = mod_layer$distances,
+  group = mod_layer$group,
+) |>
+  ggplot(aes(x = group, y = distances, fill = group))+
+  geom_boxplot()+
+  geom_text(
+    data = data.frame(
+      distances = pos,group = names(pos),label = custom_label
+      ),
+    aes(label = label),
+    hjust = -1, vjust = -0.5
+    )+
+  xlab('Layer')+ylab('Distance to Centroid')+
+  theme(
+    legend.position = 'None'
+  )
+
+
+
+```
+
+This code will extract automatically the correct labels
+
+```{r}
+library(magrittr)
+tukey <- TukeyHSD(mod_layer)
+tukey_label <-   data.frame(
+    label = rownames(tukey$group)[which(tukey$group[,'p adj']< 0.05)]
+  ) |>
+  separate(label,sep = '-', into = c('from', 'to'),remove = T) %$%
+  data.frame(from = c(from, to), to = c(to, from)) |>
+    group_by(from)|>
+    summarise(label = paste0(to, collapse = ','))|>
+  column_to_rownames('from')|>
+  pull(label)
+
 ```
